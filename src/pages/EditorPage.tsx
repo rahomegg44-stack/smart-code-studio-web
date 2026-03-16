@@ -1,5 +1,7 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import "../App.css";
+
 type Language =
   | "html"
   | "css"
@@ -201,16 +203,28 @@ function replaceFileExtension(fileName: string, newLanguage: Language) {
 }
 
 export default function EditorPage() {
-  const [languageContents, setLanguageContents] = useState<Record<Language, string>>({
-  html: "",
-  css: "",
-  javascript: "",
-  typescript: "",
-  python: "",
-  cpp: "",
-  java: "",
-  json: "",
-});
+  const navigate = useNavigate();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const initialLanguageContents = defaultFiles.reduce(
+    (acc, file) => {
+      acc[file.language] = file.content;
+      return acc;
+    },
+    {
+      html: "",
+      css: "",
+      javascript: "",
+      typescript: "",
+      python: "",
+      cpp: "",
+      java: "",
+      json: "",
+    } as Record<Language, string>
+  );
+
+  const [languageContents, setLanguageContents] =
+    useState<Record<Language, string>>(initialLanguageContents);
 
   const [theme, setTheme] = useState<ThemeMode>("dark");
   const [files, setFiles] = useState<FileItem[]>(defaultFiles);
@@ -228,7 +242,7 @@ export default function EditorPage() {
   }, [files, activeFileId]);
 
   const language = activeFile.language;
-const code = languageContents[language] ?? "";;
+  const code = languageContents[language] ?? "";
 
   const currentTheme = useMemo(() => {
     if (theme === "dark") {
@@ -270,12 +284,22 @@ const code = languageContents[language] ?? "";;
     };
   }, [theme]);
 
- const updateActiveFileContent = (newContent: string) => {
-  setLanguageContents((prev) => ({
-    ...prev,
-    [language]: newContent,
-  }));
-};
+  const updateActiveFileContent = (newContent: string) => {
+    setLanguageContents((prev) => ({
+      ...prev,
+      [language]: newContent,
+    }));
+
+    setFiles((prev) =>
+      prev.map((file) =>
+        file.id === activeFileId ? { ...file, content: newContent } : file
+      )
+    );
+  };
+
+  function openFile() {
+    fileInputRef.current?.click();
+  }
 
   const handleLanguageChange = (newLanguage: Language) => {
     setFiles((prev) =>
@@ -303,6 +327,10 @@ const code = languageContents[language] ?? "";;
     };
 
     setFiles((prev) => [...prev, newFile]);
+    setLanguageContents((prev) => ({
+      ...prev,
+      [language]: "",
+    }));
     setActiveFileId(newId);
     setRunnerStatus("New file created");
   };
@@ -352,6 +380,10 @@ const code = languageContents[language] ?? "";;
       };
 
       setFiles((prev) => [...prev, newFile]);
+      setLanguageContents((prev) => ({
+        ...prev,
+        [detectedLanguage]: fileContent,
+      }));
       setActiveFileId(newFile.id);
       setRunnerStatus("File opened");
     };
@@ -369,6 +401,7 @@ const code = languageContents[language] ?? "";;
 
   const resetWorkspace = () => {
     setFiles(defaultFiles);
+    setLanguageContents(initialLanguageContents);
     setActiveFileId(6);
     setSearchText("");
     setRunnerStatus("Workspace reset");
@@ -396,12 +429,10 @@ const code = languageContents[language] ?? "";;
   };
 
   const buildWebPreviewDocument = () => {
-    const htmlFile = files.find((file) => file.language === "html")?.content ?? "";
-    const cssFile = files.find((file) => file.language === "css")?.content ?? "";
-    const jsFile =
-      files.find((file) => file.language === "javascript")?.content ?? "";
-    const tsFile =
-      files.find((file) => file.language === "typescript")?.content ?? "";
+    const htmlFile = languageContents.html ?? "";
+    const cssFile = languageContents.css ?? "";
+    const jsFile = languageContents.javascript ?? "";
+    const tsFile = languageContents.typescript ?? "";
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -455,27 +486,42 @@ console.log(\`${tsFile.replace(/`/g, "\\`")}\`);
         return;
       }
 
-      if (
-        language !== "python" &&
-        language !== "cpp" &&
-        language !== "java"
-      ) {
-        setRunnerStatus("Unsupported run language");
+      const isElectron =
+        typeof window !== "undefined" &&
+        typeof (window as any).require === "function";
+
+      if (isElectron) {
+        const electronApi = (window as any).require("electron");
+        const result = await electronApi.ipcRenderer.invoke("run-code", {
+          language,
+          code,
+        });
+
+        navigate("/run", {
+          state: {
+            language,
+            code,
+            output: result?.success
+              ? result?.message || "Opened in CMD"
+              : "",
+            error: result?.success ? "" : result?.message || "Run failed",
+          },
+        });
+
+        setRunnerStatus(result?.success ? "Opened in CMD" : "Run failed");
         return;
       }
 
-      const electronApi = (window as any).require("electron");
-      const result = await electronApi.ipcRenderer.invoke("run-code", {
-        language,
-        code,
+      navigate("/run", {
+        state: {
+          language,
+          code,
+          output:
+            "Web run console is ready. Real execution for this language is not connected yet.",
+        },
       });
 
-      if (result.success) {
-        setRunnerStatus("Opened in CMD");
-      } else {
-        setRunnerStatus("Run failed");
-        alert(result.message);
-      }
+      setRunnerStatus("Opened in web console");
     } catch (error) {
       setRunnerStatus("Run failed");
       alert(String(error));
@@ -609,22 +655,17 @@ console.log(\`${tsFile.replace(/`/g, "\\`")}\`);
               New File
             </button>
 
-            <label
-              style={{
-                ...ui.button,
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
+            <button style={ui.button} onClick={openFile}>
               Open File
-              <input
-                type="file"
-                accept=".html,.css,.js,.ts,.py,.cpp,.java,.json,.txt"
-                onChange={openFileFromDevice}
-                style={{ display: "none" }}
-              />
-            </label>
+            </button>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".html,.css,.js,.ts,.py,.cpp,.java,.json,.txt"
+              onChange={openFileFromDevice}
+              style={{ display: "none" }}
+            />
 
             <button style={ui.button} onClick={downloadCurrentFile}>
               Download
@@ -704,7 +745,11 @@ console.log(\`${tsFile.replace(/`/g, "\\`")}\`);
             Reset Editor
           </button>
 
-          <button style={ui.primaryButton} onClick={runCode} disabled={isRunning}>
+          <button
+            style={ui.primaryButton}
+            onClick={runCode}
+            disabled={isRunning}
+          >
             {isRunning ? "Running..." : "Run"}
           </button>
         </div>
@@ -769,37 +814,37 @@ console.log(\`${tsFile.replace(/`/g, "\\`")}\`);
           </div>
 
           <div style={{ background: editorBackground, flex: 1 }}>
-<textarea
-  value={code}
-  onChange={(e) => updateActiveFileContent(e.target.value)}
-  spellCheck={false}
-  onWheel={(e) => {
-    if (e.ctrlKey) {
-      e.preventDefault();
+            <textarea
+              value={code}
+              onChange={(e) => updateActiveFileContent(e.target.value)}
+              spellCheck={false}
+              onWheel={(e) => {
+                if (e.ctrlKey) {
+                  e.preventDefault();
 
-      if (e.deltaY < 0) {
-        setEditorFontSize((s) => Math.min(s + 1, 40));
-      } else {
-        setEditorFontSize((s) => Math.max(s - 1, 10));
-      }
-    }
-  }}
-  style={{
-    width: "100%",
-    minHeight: "calc(100vh - 280px)",
-    resize: "none",
-    border: "none",
-    outline: "none",
-    padding: "24px",
-    background: editorBackground,
-    color: editorTextColor,
-    fontFamily:
-      'Consolas, "Courier New", ui-monospace, SFMono-Regular, monospace',
-    fontSize: editorFontSize + "px",
-    lineHeight: 1.8,
-    letterSpacing: "0.01em",
-  }}
-/>
+                  if (e.deltaY < 0) {
+                    setEditorFontSize((s) => Math.min(s + 1, 40));
+                  } else {
+                    setEditorFontSize((s) => Math.max(s - 1, 10));
+                  }
+                }
+              }}
+              style={{
+                width: "100%",
+                minHeight: "calc(100vh - 280px)",
+                resize: "none",
+                border: "none",
+                outline: "none",
+                padding: "24px",
+                background: editorBackground,
+                color: editorTextColor,
+                fontFamily:
+                  'Consolas, "Courier New", ui-monospace, SFMono-Regular, monospace',
+                fontSize: editorFontSize + "px",
+                lineHeight: 1.8,
+                letterSpacing: "0.01em",
+              }}
+            />
           </div>
         </div>
       </div>
